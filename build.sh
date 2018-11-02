@@ -1,6 +1,7 @@
 #!/bin/bash
 
 _PROMPT="Y"
+_BASH_HELPERS="N"
 _DOWNLOAD_ONLY="N"
 _BUILD_APPS="N"
 _BUILD_CLANG="N"
@@ -35,12 +36,32 @@ _GSDIR="${_INSTALL_PATH}/gnustep"
 _PDIR="${HOME}/Projects"
 _PRJDIR="${_PDIR}/GNUstep"
 _COREDIR="${_PRJDIR}/core"
+_GTEST_BDIR="/usr/src/gtest/build"
+
 _GNUSTEP="${_GSDIR}/System/Library/Makefiles/GNUstep.sh"
 _GNUVER="-fobjc-runtime=gnustep-${_GNU_VER}"
 
 _CC=`which clang`
 _CXX=`which clang++`
 _LD="/usr/bin/ld"
+
+function MkdirCD() {
+	local _lastDir=""
+	local _cmd="mkdir"
+	
+	if [ "$#" -gt 0 -a "$1" = "-s" ]; then
+		_cmd="sudo -E ${_cmd}"
+		shift
+	fi
+	if [ "$#" -gt 0 ]; then
+		for _f in "$@"; do
+			${_cmd} -p "${_f}" || return "$?"
+			_lastDir="${_f}"
+		done
+		cd "${_lastDir}" || return "$?"
+	fi
+	return 0
+}
 
 function zprint() {
     local x=1
@@ -173,28 +194,22 @@ function svnFiles() {
 
 function buildGTEST() {
 	zecho "INSTALLING" "Making sure libgtest.so is up-to-date..."
-	GTEST_BDIR="/usr/src/gtest/build"
-	sudo apt-get -y install libgtest-dev
-	sudo -E rm -fr "${GTEST_BDIR}" 2>>/dev/null
-	sudo -E mkdir -p "${GTEST_BDIR}" || return "$?"
-	cd "${GTEST_BDIR}"
-	sudo -E cmake -G "Unix Makefiles" \
-		"-DBUILD_SHARED_LIBS=ON" \
-		"-DCMAKE_BUILD_TYPE=Release" \
-		"-DCMAKE_CXX_COMPILER=${_CXX}" \
-		"-DCMAKE_CXX_FLAGS=" \
-		"-DCMAKE_CXX_FLAGS_RELEASE=${CFLAGS}" \
-		"-DCMAKE_C_COMPILER=${_CC}" \
-		"-DCMAKE_C_FLAGS=" \
-		"-DCMAKE_C_FLAGS_RELEASE=${CFLAGS}" \
-		"-DCMAKE_LINKER=${LD}" \
-		"-DCMAKE_MODULE_LINKER_FLAGS=" \
-		.. || return "$?"
+	sudo apt-get -y install libgtest-dev || return "$?"
+	MkdirCD -s "${_GTEST_BDIR}" || return "$?"
+	sudo -E rm -fr "${_GTEST_BDIR}"/* 2>>/dev/null
+	
+	sudo -E cmake -G "Unix Makefiles" -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_CXX_COMPILER="${_CXX}" -DCMAKE_CXX_FLAGS= -DCMAKE_CXX_FLAGS_RELEASE="${CFLAGS}" \
+		-DCMAKE_C_COMPILER="${_CC}" -DCMAKE_C_FLAGS= -DCMAKE_C_FLAGS_RELEASE="${CFLAGS}" \
+		-DCMAKE_LINKER="${LD}" -DCMAKE_MODULE_LINKER_FLAGS= .. || return "$?"
+		
 	sudo -E make "-j${_PROCS}" || return "$?" "Build Failed!"
+	
 	sudo -E rm /usr/lib/libgtest*.so* 2>>/dev/null
 	for _t in libgtest*.so; do
-		sudo -E ln -s "${GTEST_BDIR}/${_t}" "/usr/lib/${_t}"
+		sudo -E ln -s "${_GTEST_BDIR}/${_t}" "/usr/lib/${_t}"
 	done
+
 	return 0
 }
 
@@ -220,90 +235,78 @@ function ldv() {
 }
 
 function buildLibDispatch() {
-	cd "${_PRJDIR}/libdispatch"
-	mkdir build
-	cd build
-	zecho "CONFIGURING" "libdispatch"
+	local bsys="Unix Makefiles"
+	local bexe="make"
+	local cmd="-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=${_CXX}"
+	cmd="${cmd} -DCMAKE_CXX_FLAGS= -DCMAKE_CXX_FLAGS_RELEASE=${CFLAGS}"
+	cmd="${cmd} -DCMAKE_C_COMPILER=${_CC} -DCMAKE_C_FLAGS="
+	cmd="${cmd} -DCMAKE_C_FLAGS_RELEASE=${CFLAGS}"
+	cmd="${cmd} -DCMAKE_INSTALL_PREFIX=${_INSTALL_PATH}"
+	cmd="${cmd} -DCMAKE_LINKER=${LD} -DCMAKE_MODULE_LINKER_FLAGS="
 
 	if [ "${_USE_APPLE_DISPATCH}" = "Y" ]; then
-		cmake -G "Ninja" \
-			"-DCMAKE_BUILD_TYPE=Release" \
-			"-DCMAKE_CXX_COMPILER=${_CXX}" \
-			"-DCMAKE_CXX_FLAGS=" \
-			"-DCMAKE_CXX_FLAGS_RELEASE=${CFLAGS}" \
-			"-DCMAKE_C_COMPILER=${_CC}" \
-			"-DCMAKE_C_FLAGS=" \
-			"-DCMAKE_C_FLAGS_RELEASE=${CFLAGS}" \
-			"-DCMAKE_INSTALL_PREFIX=${_INSTALL_PATH}" \
-			"-DCMAKE_LINKER=${LD}" \
-	    	"-DCMAKE_MODULE_LINKER_FLAGS=" \
-			.. || zfail  "$?" "CMAKE Failed!"
-		zecho "BUILDING" "libdispatch"
-		ninja "-j${_PROCS}" || zfail "$?"
-		sudo ninja install || zfail "$?"
-	else
-		cmake -G "Unix Makefiles" \
-			"-DCMAKE_BUILD_TYPE=Release" \
-			"-DCMAKE_CXX_COMPILER=${_CXX}" \
-			"-DCMAKE_CXX_FLAGS=" \
-			"-DCMAKE_CXX_FLAGS_RELEASE=${CFLAGS}" \
-			"-DCMAKE_C_COMPILER=${_CC}" \
-			"-DCMAKE_C_FLAGS=" \
-			"-DCMAKE_C_FLAGS_RELEASE=${CFLAGS}" \
-			"-DCMAKE_INSTALL_PREFIX=${_INSTALL_PATH}" \
-			"-DCMAKE_LINKER=${LD}" \
-    		"-DCMAKE_MODULE_LINKER_FLAGS=" \
-			.. || zfail  "$?" "CMAKE Failed!"
-		zecho "BUILDING" "libdispatch"
-		make "-j${_PROCS}" || zfail "$?" "Build Failed!"
-		sudo -E make install || zfail "$?" "Install Failed!"
+		bsys="Ninja"
+		bexe="ninja"
 	fi
+	
+	MkdirCD "${_PRJDIR}/libdispatch/build"
+	zecho "CONFIGURING" "libdispatch"
+	cmake -G "${bsys}" ${cmd} .. || zfail  "$?" "CMAKE Failed!"
+	zecho "BUILDING" "libdispatch"
+	"${bexe}" "-j${_PROCS}" || zfail "$?" "Build Failed!"
+	sudo -E "${bexe}" install || zfail "$?" "Install Failed!"	
 	sudo ldconfig
 }
 
 function buildLibObjc2() {
-	cd "${_PRJDIR}/libobjc2"
-	mkdir build
+	local oldabi=""
+	
+	MkdirCD "${_PRJDIR}/libobjc2/build"
 	zecho "CONFIGURING" "libobjc"
 
-	cd build
-	cmake -G "Unix Makefiles" \
-		"-DBUILD_STATIC_LIBOBJC=ON" \
-		"-DCMAKE_BUILD_TYPE=Release" \
-		"-DCMAKE_CXX_COMPILER=${_CXX}" \
-		"-DCMAKE_CXX_FLAGS_RELEASE=${CFLAGS}" \
-		"-DCMAKE_C_COMPILER=${_CC}" \
-		"-DCMAKE_C_FLAGS=" "-DCMAKE_CXX_FLAGS=" \
-		"-DCMAKE_C_FLAGS_RELEASE=${CFLAGS}" \
-		"-DCMAKE_INSTALL_PREFIX=${_INSTALL_PATH}" \
-		"-DCMAKE_LINKER=${LD}" \
-		"-DLIBOBJC_NAME=${_OBJC_NAME}" \
-		"-DOLDABI_COMPAT=${_OLDABI_COMPAT}" \
-		"-DTESTS=OFF" \
-		"-DTYPE_DEPENDENT_DISPATCH=ON" \
-		.. || zfail  "$?" "CMAKE Failed!"
-	#cmake-gui .. || zfail "$?"
+	if [ "${_OLDABI_COMPAT}" != "ON" ]; then
+		oldapi="-DOLDABI_COMPAT=OFF"
+	fi
+	
+	cmake -G "Unix Makefiles"  -DBUILD_STATIC_LIBOBJC=ON -DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_CXX_COMPILER="${_CXX}" -DCMAKE_CXX_FLAGS_RELEASE="${CFLAGS}" \
+		-DCMAKE_C_COMPILER="${_CC}" -DCMAKE_C_FLAGS= -DCMAKE_CXX_FLAGS= \
+		-DCMAKE_C_FLAGS_RELEASE="${CFLAGS}" -DCMAKE_INSTALL_PREFIX="${_INSTALL_PATH}" \
+		-DCMAKE_LINKER="${LD}" -DLIBOBJC_NAME="${_OBJC_NAME}" -DTESTS=OFF \
+		-DTYPE_DEPENDENT_DISPATCH=ON "${oldapi}" .. || zfail  "$?" "CMAKE Failed!"
+
 	showPrompt
 	zecho "BUILDING" "libobjc"
 	#cmake --build . || zfail "$?" "CMAKE BUILD failed!"
 	make "-j${_PROCS}" || zfail "$?" "Build Failed!"
 	sudo -E make install || zfail "$?" "Install Failed!"
+	
+	###################################################################
+	# Because the Makefile sometimes failes to create these links...
+	#
 	pushd "${_INSTALL_PATH}/include" >> /dev/null
+	
 	if [ -e "objc/blocks_runtime.h" ]; then
         sudo rm "Block.h" 2>>/dev/null
         sudo ln -s "objc/blocks_runtime.h" "Block.h"
     fi
+    
     if [ -e "objc/blocks_private.h" ]; then
         sudo rm "Block_private.h" 2>>/dev/null
         sudo ln -s "objc/blocks_private.h" "Block_private.h"
     fi
+    
     popd >>/dev/null
+    #
+	###################################################################
+
 	sudo ldconfig
 }
 
 function buildGNUstepMake() {
 	local nfabi=""
 	local bashpath="${HOME}/.bash.d/bash04gnustep.sh"
+	local bashrcpath="${HOME}/.bashrc"
 
 	if [ "${_USE_NONFRAGILE_ABI_FLAG}" = "Y" ]; then
 		nfabi="--enable-objc-nonfragile-abi"
@@ -311,20 +314,20 @@ function buildGNUstepMake() {
 
 	cd "${_COREDIR}/make"
 	zecho "CONFIGURING" "GNUstep Make"
-	./configure "--prefix=${_GSDIR}" "${nfabi}" \
-		"--with-library-combo=ng-gnu-gnu" \
-		"--enable-objc-arc" \
-		"--enable-native-objc-exceptions" \
-		"--enable-debug-by-default" \
-		"--with-layout=gnustep" \
-		"--enable-install-ld-so-conf" \
-		"--with-objc-lib-flag=-l${_OBJC_NAME}" \
-		|| return "$?"
+
+	./configure --prefix="${_GSDIR}" "${nfabi}" --with-library-combo=ng-gnu-gnu --enable-objc-arc \
+		--enable-native-objc-exceptions --enable-debug-by-default --with-layout=gnustep \
+		--enable-install-ld-so-conf --with-objc-lib-flag="-l${_OBJC_NAME}" || return "$?"
+		
 	zecho "BUILDING" "GNUstep Make"
 	make "-j${_PROCS}"
 	sudo -E make install
-	rm "${bashpath}" 2>/dev/null
-	ln -s "${_GNUSTEP}" "${bashpath}"
+	if [ "${_BASH_HELPERS}" = "Y" ]; then
+		rm "${bashpath}" 2>/dev/null
+		ln -s "${_GNUSTEP}" "${bashpath}"
+	else
+		echo ". ${_GNUSTEP}" >> "${bashrcpath}"
+	fi
 	showPrompt
 	return "$?"
 }
@@ -343,8 +346,7 @@ export zprint zecho zwarn zfail showPrompt
 #############################################################################################
 # Create the work directory if it's not there already...
 #
-mkdir -p "${_PRJDIR}"
-cd "${_PRJDIR}"
+MkdirCD "${_PRJDIR}"
 
 #############################################################################################
 # Clear the logs...
@@ -381,8 +383,7 @@ if [ "${_BUILD_CLANG}" = "Y" ]; then
 	svnFiles "CLANG Tools Source"   "${_LLVMSVN}/clang-tools-extra/${_CLANG_VER}" "${_PRJDIR}/llvm/tools/clang/tools/extra/clang-tools-extra" || zfail  "$?" "SVN Request Failed!"
 
 	if [ "${_DOWNLOAD_ONLY}" != "Y" ]; then
-		mkdir "${_PRJDIR}/llvm/build"
-		cd "${_PRJDIR}/llvm/build"
+		MkdirCD "${_PRJDIR}/llvm/build"
 		zecho "CONFIGURING" "LLVM/CLANG"
 		cmake -G "Unix Makefiles" -Wno-dev \
 			"-DBUILD_SHARED_LIBS=ON" \
@@ -400,9 +401,9 @@ if [ "${_BUILD_CLANG}" = "Y" ]; then
 			"-DCMAKE_MODULE_LINKER_FLAGS=" \
 			"-DCOMPILER_RT_CAN_EXECUTE_TESTS=OFF" \
 			"-DCOMPILER_RT_INCLUDE_TESTS=OFF" \
-			"-DFFI_INCLUDE_DIR=/usr/include/x86_64-linux-gnu" \
-			"-DFFI_LIBRARY_DIR=/usr/lib/x86_64-linux-gnu" \
-			"-DLLVM_BINUTILS_INCDIR=/usr/include" \
+			"-DFFI_INCLUDE_DIR=`dirname $(find /usr -name "libffi.so") 2>/dev/null`" \
+			"-DFFI_LIBRARY_DIR=`dirname $(find /usr -name "libffi.h") 2>/dev/null`" \
+			"-DLLVM_BINUTILS_INCDIR=`dirname $(find /usr -name "plugin-api.h") 2>/dev/null`" \
 			"-DLLVM_BUILD_DOCS=OFF" \
 			"-DLLVM_ENABLE_EH=ON" \
 			"-DLLVM_ENABLE_FFI=ON" \
@@ -415,7 +416,7 @@ if [ "${_BUILD_CLANG}" = "Y" ]; then
 			"-DLLVM_INCLUDE_TOOLS=ON" \
 			"-DLLVM_INCLUDE_UTILS=ON" \
 			"-DLLVM_INSTALL_UTILS=ON" \
-			"-DLLVM_TARGETS_TO_BUILD=AArch64;ARM;X86" \
+			"-DLLVM_TARGETS_TO_BUILD=X86" \
 			"-DLLVM_TOOL_CLANG_TOOLS_EXTRA_BUILD=ON" \
 			.. || zfail  "$?" "CMAKE Failed!"
 		# cmake-gui .. || zfail  "$?" "CMAKE Failed!"
@@ -424,8 +425,8 @@ if [ "${_BUILD_CLANG}" = "Y" ]; then
 		sudo -E make install || zfail "$?" "Install Failed!"
 		sudo ldconfig
 		zecho "SUCCESS" "LLVM/CLANG built and installed."
-		_CC=`which clang`
-		_CXX=`which clang++`
+		_CC="${_INSTALL_PATH}/bin/clang"
+		_CXX="${_INSTALL_PATH}/bin/clang++"
 		_LD=`which ld.gold`
 
 		export CC="${_CC}"
@@ -567,6 +568,9 @@ showPrompt
 defaults write NSGlobalDomain NSInterfaceStyleDefault NSWindows95InterfaceStyle
 defaults write NSGlobalDomain GSSuppressAppIcon YES
 
+#############################################################################################
+# Build GNUstep Apps...
+#
 _APP_BUILD_MESSAGE=""
 
 function BuildAppFailed() {
@@ -591,9 +595,6 @@ function BuildApp() {
     return 0
 }
 
-#############################################################################################
-# Build GNUstep Apps...
-#
 if [ "${_BUILD_APPS}" = "Y" ]; then
     BuildApp "GNUstep Project Center"     "apps-projectcenter"     "N" || zfail "$?" "${_APP_BUILD_MESSAGE}"
     BuildApp "GNUstep GORM"               "apps-gorm"              "N" || zfail "$?" "${_APP_BUILD_MESSAGE}"
